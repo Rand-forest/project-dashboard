@@ -200,10 +200,11 @@
         }));
       }
 
+      // Updated to fetch columns up to H (Start Date and End Date)
       async getTasks() {
         const response = await gapi.client.sheets.spreadsheets.values.get({
           spreadsheetId: CONFIG.SPREADSHEET_ID,
-          range: `${CONFIG.SHEETS.TASKS}!A2:F`,
+          range: `${CONFIG.SHEETS.TASKS}!A2:H`,
         });
         
         const rows = response.result.values || [];
@@ -213,7 +214,9 @@
           title: row[2] || '',
           completed: row[3] === 'TRUE',
           createdAt: row[4] || new Date().toISOString(),
-          createdBy: row[5] || ''
+          createdBy: row[5] || '',
+          startDate: row[6] || '',
+          endDate: row[7] || ''
         }));
       }
 
@@ -237,6 +240,7 @@
         });
       }
 
+      // Updated to include Start Date and End Date
       async addTask(task, userName) {
         const values = [[
           task.id,
@@ -244,7 +248,9 @@
           task.title,
           task.completed ? 'TRUE' : 'FALSE',
           task.createdAt,
-          userName
+          userName,
+          task.startDate || '',
+          task.endDate || ''
         ]];
 
         await gapi.client.sheets.spreadsheets.values.append({
@@ -280,6 +286,7 @@
         });
       }
 
+      // Updated to include Start Date and End Date
       async updateTask(taskId, updates) {
         const tasks = await this.getTasks();
         const rowIndex = tasks.findIndex(t => t.id === taskId);
@@ -292,7 +299,9 @@
           task.title,
           task.completed ? 'TRUE' : 'FALSE',
           task.createdAt,
-          task.createdBy
+          task.createdBy,
+          task.startDate || '',
+          task.endDate || ''
         ]];
 
         await gapi.client.sheets.spreadsheets.values.update({
@@ -531,9 +540,10 @@
         }
       };
 
-      const editTask = async (taskId, newTitle) => {
+      // Updated to take a full updates object instead of just title
+      const editTask = async (taskId, updates) => {
         try {
-          await sheetsClient.updateTask(taskId, { title: newTitle });
+          await sheetsClient.updateTask(taskId, updates);
           await refreshData();
         } catch (err) {
           setError('Failed to edit task. Please try again.');
@@ -848,10 +858,7 @@
     // PROJECT VIEW
     // ============================================
     function ProjectView({ project, onBack, onUpdateProject, onAddTask, onToggleTask, onEditTask, onDeleteTask }) {
-      const [showAddTask, setShowAddTask] = useState(false);
-      const [taskText, setTaskText] = useState('');
-      const [editingTaskId, setEditingTaskId] = useState(null);
-      const [editTaskTitle, setEditTaskTitle] = useState('');
+      const [taskModalConfig, setTaskModalConfig] = useState({ isOpen: false, task: null });
 
       const stats = {
         total: project.tasks?.length || 0,
@@ -860,25 +867,19 @@
       };
       stats.progress = stats.total > 0 ? (stats.completed / stats.total) * 100 : 0;
 
-      const handleAddTask = () => {
-        if (taskText.trim()) {
-          onAddTask(project.id, { title: taskText.trim() });
-          setTaskText('');
-          setShowAddTask(false);
+      const handleSaveTask = (taskData) => {
+        if (taskModalConfig.task) {
+          // Editing existing task
+          onEditTask(taskModalConfig.task.id, taskData);
+        } else {
+          // Adding new task
+          onAddTask(project.id, taskData);
         }
+        setTaskModalConfig({ isOpen: false, task: null });
       };
 
-      const startEditing = (task) => {
-        setEditingTaskId(task.id);
-        setEditTaskTitle(task.title);
-      };
-
-      const saveEdit = () => {
-        if (editTaskTitle.trim() && editTaskTitle !== project.tasks.find(t => t.id === editingTaskId)?.title) {
-          onEditTask(editingTaskId, editTaskTitle.trim());
-        }
-        setEditingTaskId(null);
-      };
+      const openAddTask = () => setTaskModalConfig({ isOpen: true, task: null });
+      const openEditTask = (task) => setTaskModalConfig({ isOpen: true, task });
 
       return (
         <div className="animate-in">
@@ -934,43 +935,12 @@
                 Tasks ({stats.completed}/{stats.total})
               </h3>
               <button
-                onClick={() => setShowAddTask(true)}
+                onClick={openAddTask}
                 className="px-4 py-2 btn-primary text-white rounded-lg font-medium"
               >
                 + Add Task
               </button>
             </div>
-
-            {showAddTask && (
-              <div className="mb-6 flex gap-3">
-                <input
-                  type="text"
-                  value={taskText}
-                  onChange={(e) => setTaskText(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && handleAddTask()}
-                  placeholder="Enter task name..."
-                  className="flex-1 px-4 py-3 border-2 border-gray-300 rounded-lg font-medium"
-                  style={{ color: 'var(--charcoal)' }}
-                  autoFocus
-                />
-                <button
-                  onClick={handleAddTask}
-                  className="px-6 py-3 btn-primary text-white rounded-lg font-medium"
-                >
-                  Add
-                </button>
-                <button
-                  onClick={() => {
-                    setShowAddTask(false);
-                    setTaskText('');
-                  }}
-                  className="px-6 py-3 bg-gray-200 rounded-lg font-medium"
-                  style={{ color: 'var(--charcoal)' }}
-                >
-                  Cancel
-                </button>
-              </div>
-            )}
 
             <div className="space-y-3">
               {(!project.tasks || project.tasks.length === 0) && (
@@ -995,55 +965,145 @@
                     {task.completed && <span className="text-white text-sm">✓</span>}
                   </button>
 
-                  {editingTaskId === task.id ? (
-                    <div className="flex-1 flex items-center gap-2">
-                      <input
-                        type="text"
-                        value={editTaskTitle}
-                        onChange={(e) => setEditTaskTitle(e.target.value)}
-                        onKeyPress={(e) => e.key === 'Enter' && saveEdit()}
-                        className="flex-1 px-3 py-1 border-2 border-gray-300 rounded focus:border-terra outline-none font-medium"
-                        autoFocus
-                      />
-                      <button onClick={saveEdit} className="px-3 py-1 bg-green-500 text-white rounded font-medium text-sm hover:bg-green-600 transition">Save</button>
-                      <button onClick={() => setEditingTaskId(null)} className="px-3 py-1 bg-gray-200 text-gray-700 rounded font-medium text-sm hover:bg-gray-300 transition">Cancel</button>
-                    </div>
-                  ) : (
-                    <>
-                      <span
-                        className={`flex-1 text-lg ${task.completed ? 'line-through opacity-50' : ''}`}
-                        style={{ color: 'var(--charcoal)' }}
-                      >
-                        {task.title}
-                      </span>
-                      
-                      {task.createdBy && (
-                        <span className="text-sm mr-2 opacity-50 hidden md:block" style={{ color: 'var(--warm-gray)' }}>
-                          {task.createdBy.split('@')[0]}
-                        </span>
-                      )}
-
-                      <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button 
-                          onClick={() => startEditing(task)} 
-                          className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-600 transition"
-                          title="Edit Task"
-                        >
-                          ✎
-                        </button>
-                        <button 
-                          onClick={() => onDeleteTask(task.id)} 
-                          className="w-8 h-8 rounded-full bg-red-50 hover:bg-red-100 flex items-center justify-center text-red-500 transition"
-                          title="Delete Task"
-                        >
-                          ×
-                        </button>
+                  <div className="flex-1">
+                    <span
+                      className={`text-lg block ${task.completed ? 'line-through opacity-50' : ''}`}
+                      style={{ color: 'var(--charcoal)' }}
+                    >
+                      {task.title}
+                    </span>
+                    {(task.startDate || task.endDate) && (
+                      <div className={`flex gap-3 text-xs mt-1 ${task.completed ? 'opacity-50' : ''}`} style={{ color: 'var(--warm-gray)' }}>
+                        {task.startDate && <span><span className="font-medium">Start:</span> {new Date(task.startDate).toLocaleDateString()}</span>}
+                        {task.endDate && <span><span className="font-medium">End:</span> {new Date(task.endDate).toLocaleDateString()}</span>}
                       </div>
-                    </>
+                    )}
+                  </div>
+                  
+                  {task.createdBy && (
+                    <span className="text-sm mr-2 opacity-50 hidden md:block" style={{ color: 'var(--warm-gray)' }}>
+                      {task.createdBy.split('@')[0]}
+                    </span>
                   )}
+
+                  <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button 
+                      onClick={() => openEditTask(task)} 
+                      className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-600 transition"
+                      title="Edit Task"
+                    >
+                      ✎
+                    </button>
+                    <button 
+                      onClick={() => onDeleteTask(task.id)} 
+                      className="w-8 h-8 rounded-full bg-red-50 hover:bg-red-100 flex items-center justify-center text-red-500 transition"
+                      title="Delete Task"
+                    >
+                      ×
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
+          </div>
+          
+          {taskModalConfig.isOpen && (
+            <TaskModal
+              task={taskModalConfig.task}
+              onSave={handleSaveTask}
+              onClose={() => setTaskModalConfig({ isOpen: false, task: null })}
+            />
+          )}
+        </div>
+      );
+    }
+
+    // ============================================
+    // TASK MODAL (ADD & EDIT)
+    // ============================================
+    function TaskModal({ task, onSave, onClose }) {
+      const isEditing = !!task;
+      const [formData, setFormData] = useState({
+        title: task?.title || '',
+        startDate: task?.startDate || '',
+        endDate: task?.endDate || ''
+      });
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        if (formData.title.trim()) {
+          onSave(formData);
+        }
+      };
+
+      return (
+        <div className="fixed inset-0 bg-black bg-opacity-40 modal-backdrop flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-xl max-w-lg w-full p-8 border-2 border-gray-200 animate-in">
+            <h3 className="text-3xl font-bold mb-6" style={{ color: 'var(--charcoal)' }}>
+              {isEditing ? 'Edit Task' : 'New Task'}
+            </h3>
+            <form onSubmit={handleSubmit} className="space-y-5">
+              <div>
+                <label className="block text-sm font-semibold mb-2" style={{ color: 'var(--charcoal)' }}>
+                  Task Title *
+                </label>
+                <input
+                  type="text"
+                  value={formData.title}
+                  onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                  className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg font-medium"
+                  style={{ color: 'var(--charcoal)' }}
+                  placeholder="Enter task name..."
+                  required
+                  autoFocus
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-semibold mb-2" style={{ color: 'var(--charcoal)' }}>
+                    Start Date (Optional)
+                  </label>
+                  <input
+                    type="date"
+                    value={formData.startDate}
+                    onChange={(e) => setFormData({ ...formData, startDate: e.target.value })}
+                    className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg font-medium"
+                    style={{ color: 'var(--charcoal)' }}
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold mb-2" style={{ color: 'var(--charcoal)' }}>
+                    End Date (Optional)
+                  </label>
+                  <input
+                    type="date"
+                    value={formData.endDate}
+                    onChange={(e) => setFormData({ ...formData, endDate: e.target.value })}
+                    className="w-full px-4 py-3 border-2 border-gray-300 rounded-lg font-medium"
+                    style={{ color: 'var(--charcoal)' }}
+                  />
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-4">
+                <button
+                  type="submit"
+                  className="flex-1 py-3 btn-primary text-white rounded-lg font-semibold"
+                >
+                  {isEditing ? 'Save Changes' : 'Add Task'}
+                </button>
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="flex-1 py-3 bg-gray-200 rounded-lg font-semibold"
+                  style={{ color: 'var(--charcoal)' }}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       );
