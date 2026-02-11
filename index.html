@@ -97,6 +97,14 @@
       backdrop-filter: blur(4px);
       animation: fadeIn 0.2s ease;
     }
+
+    .gantt-bar {
+      transition: all 0.3s ease;
+    }
+    .gantt-bar:hover {
+      filter: brightness(1.1);
+      transform: scaleY(1.1);
+    }
   </style>
 </head>
 <body>
@@ -200,7 +208,6 @@
         }));
       }
 
-      // Updated to fetch columns up to H (Start Date and End Date)
       async getTasks() {
         const response = await gapi.client.sheets.spreadsheets.values.get({
           spreadsheetId: CONFIG.SPREADSHEET_ID,
@@ -240,7 +247,6 @@
         });
       }
 
-      // Updated to include Start Date and End Date
       async addTask(task, userName) {
         const values = [[
           task.id,
@@ -286,7 +292,6 @@
         });
       }
 
-      // Updated to include Start Date and End Date
       async updateTask(taskId, updates) {
         const tasks = await this.getTasks();
         const rowIndex = tasks.findIndex(t => t.id === taskId);
@@ -399,6 +404,93 @@
     }
 
     const sheetsClient = new SheetsClient();
+
+    // ============================================
+    // GANTT VIEW COMPONENT
+    // ============================================
+    function GanttView({ tasks }) {
+      // Filter out tasks that don't have both start and end dates
+      const validTasks = tasks
+        .filter(t => t.startDate && t.endDate)
+        .map(t => ({
+          ...t,
+          start: new Date(t.startDate),
+          end: new Date(t.endDate)
+        }))
+        .sort((a, b) => a.start - b.start);
+
+      if (validTasks.length === 0) {
+        return (
+          <div className="text-center py-16 animate-in border-2 border-dashed border-gray-200 rounded-xl">
+            <div className="text-4xl mb-3">📊</div>
+            <p className="text-lg font-medium" style={{ color: 'var(--charcoal)' }}>No timeline data available</p>
+            <p className="text-sm mt-1" style={{ color: 'var(--warm-gray)' }}>
+              Add a Start Date and End Date to your tasks to generate a Gantt chart.
+            </p>
+          </div>
+        );
+      }
+
+      // Calculate the global min and max dates to set the timeline scale
+      const minDate = new Date(Math.min(...validTasks.map(t => t.start)));
+      const maxDate = new Date(Math.max(...validTasks.map(t => t.end)));
+      
+      // Add a little padding to the timeline (2 days on each side)
+      minDate.setDate(minDate.getDate() - 2);
+      maxDate.setDate(maxDate.getDate() + 2);
+      
+      const totalTime = maxDate.getTime() - minDate.getTime();
+
+      return (
+        <div className="mt-2 border-2 border-gray-200 rounded-xl overflow-hidden bg-white animate-in">
+          {/* Header row with dates */}
+          <div className="flex border-b-2 border-gray-200 bg-gray-50">
+            <div className="w-48 lg:w-64 flex-shrink-0 p-4 font-bold text-sm border-r-2 border-gray-200" style={{ color: 'var(--charcoal)' }}>
+              Task Name
+            </div>
+            <div className="flex-1 relative p-4 h-12">
+              <span className="absolute left-4 top-4 text-xs font-bold text-gray-400">{minDate.toLocaleDateString()}</span>
+              <span className="absolute right-4 top-4 text-xs font-bold text-gray-400">{maxDate.toLocaleDateString()}</span>
+            </div>
+          </div>
+
+          {/* Task rows */}
+          <div className="divide-y divide-gray-100">
+            {validTasks.map(task => {
+              // Calculate positioning percentages
+              const leftOffset = ((task.start.getTime() - minDate.getTime()) / totalTime) * 100;
+              // Ensure minimum width visually represents at least 1 day
+              const duration = Math.max(1000 * 3600 * 24, task.end.getTime() - task.start.getTime());
+              const width = (duration / totalTime) * 100;
+
+              return (
+                <div key={task.id} className="flex hover:bg-gray-50 transition h-14 group">
+                  <div className="w-48 lg:w-64 flex-shrink-0 p-4 text-sm truncate border-r-2 border-gray-200 flex items-center" title={task.title}>
+                    <span style={{ color: 'var(--charcoal)' }} className={`font-medium ${task.completed ? 'line-through opacity-50' : ''}`}>
+                      {task.title}
+                    </span>
+                  </div>
+                  <div className="flex-1 relative px-4">
+                    <div 
+                      className="gantt-bar absolute top-3 bottom-3 rounded shadow flex items-center px-3 text-xs font-bold text-white overflow-hidden whitespace-nowrap cursor-help"
+                      style={{ 
+                        left: `calc(${leftOffset}% + 1rem)`, 
+                        width: `calc(${width}% - 2rem)`, // Adjusting for px-4 padding
+                        backgroundColor: task.completed ? 'var(--sage)' : 'var(--terra)',
+                        opacity: task.completed ? 0.7 : 1
+                      }}
+                      title={`${task.title}\nStart: ${task.startDate}\nEnd: ${task.endDate}`}
+                    >
+                      {width > 15 ? task.title : ''}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
 
     // ============================================
     // MAIN APP COMPONENT
@@ -540,7 +632,6 @@
         }
       };
 
-      // Updated to take a full updates object instead of just title
       const editTask = async (taskId, updates) => {
         try {
           await sheetsClient.updateTask(taskId, updates);
@@ -859,6 +950,8 @@
     // ============================================
     function ProjectView({ project, onBack, onUpdateProject, onAddTask, onToggleTask, onEditTask, onDeleteTask }) {
       const [taskModalConfig, setTaskModalConfig] = useState({ isOpen: false, task: null });
+      // NEW STATE for toggling views
+      const [activeTab, setActiveTab] = useState('list'); // 'list' or 'gantt'
 
       const stats = {
         total: project.tasks?.length || 0,
@@ -869,10 +962,8 @@
 
       const handleSaveTask = (taskData) => {
         if (taskModalConfig.task) {
-          // Editing existing task
           onEditTask(taskModalConfig.task.id, taskData);
         } else {
-          // Adding new task
           onAddTask(project.id, taskData);
         }
         setTaskModalConfig({ isOpen: false, task: null });
@@ -891,6 +982,7 @@
             ← Back to Dashboard
           </button>
 
+          {/* Project Details Card */}
           <div className="bg-white rounded-xl border-2 border-gray-200 p-8 mb-6">
             <h2 className="text-4xl font-bold mb-4" style={{ color: 'var(--charcoal)' }}>
               {project.name}
@@ -929,8 +1021,9 @@
             </div>
           </div>
 
+          {/* Tasks Container */}
           <div className="bg-white rounded-xl border-2 border-gray-200 p-8">
-            <div className="flex justify-between items-center mb-6">
+            <div className="flex justify-between items-center mb-2">
               <h3 className="text-2xl font-bold" style={{ color: 'var(--charcoal)' }}>
                 Tasks ({stats.completed}/{stats.total})
               </h3>
@@ -942,69 +1035,92 @@
               </button>
             </div>
 
-            <div className="space-y-3">
-              {(!project.tasks || project.tasks.length === 0) && (
-                <p className="text-center py-12" style={{ color: 'var(--warm-gray)' }}>
-                  No tasks yet. Add one to get started!
-                </p>
-              )}
-              {project.tasks?.map((task, index) => (
-                <div
-                  key={task.id}
-                  className="flex items-center gap-4 p-4 hover:bg-gray-50 rounded-lg transition border-2 border-transparent hover:border-gray-200 group"
-                  style={{ animationDelay: `${index * 0.05}s` }}
-                >
-                  <button
-                    onClick={() => onToggleTask(task.id)}
-                    className="flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition"
-                    style={{
-                      borderColor: task.completed ? 'var(--sage)' : 'var(--warm-gray)',
-                      backgroundColor: task.completed ? 'var(--sage)' : 'transparent'
-                    }}
-                  >
-                    {task.completed && <span className="text-white text-sm">✓</span>}
-                  </button>
-
-                  <div className="flex-1">
-                    <span
-                      className={`text-lg block ${task.completed ? 'line-through opacity-50' : ''}`}
-                      style={{ color: 'var(--charcoal)' }}
-                    >
-                      {task.title}
-                    </span>
-                    {(task.startDate || task.endDate) && (
-                      <div className={`flex gap-3 text-xs mt-1 ${task.completed ? 'opacity-50' : ''}`} style={{ color: 'var(--warm-gray)' }}>
-                        {task.startDate && <span><span className="font-medium">Start:</span> {new Date(task.startDate).toLocaleDateString()}</span>}
-                        {task.endDate && <span><span className="font-medium">End:</span> {new Date(task.endDate).toLocaleDateString()}</span>}
-                      </div>
-                    )}
-                  </div>
-                  
-                  {task.createdBy && (
-                    <span className="text-sm mr-2 opacity-50 hidden md:block" style={{ color: 'var(--warm-gray)' }}>
-                      {task.createdBy.split('@')[0]}
-                    </span>
-                  )}
-
-                  <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                    <button 
-                      onClick={() => openEditTask(task)} 
-                      className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-600 transition"
-                      title="Edit Task"
-                    >
-                      ✎
-                    </button>
-                    <button 
-                      onClick={() => onDeleteTask(task.id)} 
-                      className="w-8 h-8 rounded-full bg-red-50 hover:bg-red-100 flex items-center justify-center text-red-500 transition"
-                      title="Delete Task"
-                    >
-                      ×
-                    </button>
-                  </div>
-                </div>
-              ))}
+            {/* View Toggle Tabs */}
+            <div className="flex gap-6 mb-6 border-b-2 border-gray-100">
+              <button 
+                onClick={() => setActiveTab('list')}
+                className={`pb-3 font-bold text-lg border-b-4 transition ${activeTab === 'list' ? 'border-terra' : 'border-transparent hover:border-gray-300'}`}
+                style={{ color: activeTab === 'list' ? 'var(--terra)' : 'var(--warm-gray)', borderColor: activeTab === 'list' ? 'var(--terra)' : '' }}
+              >
+                List View
+              </button>
+              <button 
+                onClick={() => setActiveTab('gantt')}
+                className={`pb-3 font-bold text-lg border-b-4 transition ${activeTab === 'gantt' ? 'border-terra' : 'border-transparent hover:border-gray-300'}`}
+                style={{ color: activeTab === 'gantt' ? 'var(--terra)' : 'var(--warm-gray)', borderColor: activeTab === 'gantt' ? 'var(--terra)' : '' }}
+              >
+                Gantt Chart
+              </button>
             </div>
+
+            {/* Conditional Rendering based on Tab */}
+            {activeTab === 'list' ? (
+              <div className="space-y-3 animate-in">
+                {(!project.tasks || project.tasks.length === 0) && (
+                  <p className="text-center py-12" style={{ color: 'var(--warm-gray)' }}>
+                    No tasks yet. Add one to get started!
+                  </p>
+                )}
+                {project.tasks?.map((task, index) => (
+                  <div
+                    key={task.id}
+                    className="flex items-center gap-4 p-4 hover:bg-gray-50 rounded-lg transition border-2 border-transparent hover:border-gray-200 group"
+                    style={{ animationDelay: `${index * 0.05}s` }}
+                  >
+                    <button
+                      onClick={() => onToggleTask(task.id)}
+                      className="flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition"
+                      style={{
+                        borderColor: task.completed ? 'var(--sage)' : 'var(--warm-gray)',
+                        backgroundColor: task.completed ? 'var(--sage)' : 'transparent'
+                      }}
+                    >
+                      {task.completed && <span className="text-white text-sm">✓</span>}
+                    </button>
+
+                    <div className="flex-1">
+                      <span
+                        className={`text-lg block font-semibold ${task.completed ? 'line-through opacity-50' : ''}`}
+                        style={{ color: 'var(--charcoal)' }}
+                      >
+                        {task.title}
+                      </span>
+                      {(task.startDate || task.endDate) && (
+                        <div className={`flex gap-3 text-sm mt-1 ${task.completed ? 'opacity-50' : ''}`} style={{ color: 'var(--warm-gray)' }}>
+                          {task.startDate && <span><span className="font-bold">Start:</span> {new Date(task.startDate).toLocaleDateString()}</span>}
+                          {task.endDate && <span><span className="font-bold">End:</span> {new Date(task.endDate).toLocaleDateString()}</span>}
+                        </div>
+                      )}
+                    </div>
+                    
+                    {task.createdBy && (
+                      <span className="text-sm mr-2 opacity-50 hidden md:block" style={{ color: 'var(--warm-gray)' }}>
+                        {task.createdBy.split('@')[0]}
+                      </span>
+                    )}
+
+                    <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button 
+                        onClick={() => openEditTask(task)} 
+                        className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-600 transition"
+                        title="Edit Task"
+                      >
+                        ✎
+                      </button>
+                      <button 
+                        onClick={() => onDeleteTask(task.id)} 
+                        className="w-8 h-8 rounded-full bg-red-50 hover:bg-red-100 flex items-center justify-center text-red-500 transition"
+                        title="Delete Task"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <GanttView tasks={project.tasks || []} />
+            )}
           </div>
           
           {taskModalConfig.isOpen && (
