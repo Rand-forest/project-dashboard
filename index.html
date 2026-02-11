@@ -18,6 +18,7 @@
       --cream: #FAF7F2;
       --charcoal: #2D3436;
       --warm-gray: #6C757D;
+      --success-green: #22C55E;
     }
     
     body {
@@ -104,6 +105,13 @@
     .gantt-bar:hover {
       filter: brightness(1.1);
       transform: scaleY(1.1);
+    }
+
+    .drag-handle {
+      cursor: grab;
+    }
+    .drag-handle:active {
+      cursor: grabbing;
     }
   </style>
 </head>
@@ -211,20 +219,32 @@
       async getTasks() {
         const response = await gapi.client.sheets.spreadsheets.values.get({
           spreadsheetId: CONFIG.SPREADSHEET_ID,
-          range: `${CONFIG.SHEETS.TASKS}!A2:H`,
+          range: `${CONFIG.SHEETS.TASKS}!A2:I`,
         });
         
         const rows = response.result.values || [];
-        return rows.map(row => ({
-          id: row[0] || '',
-          projectId: row[1] || '',
-          title: row[2] || '',
-          completed: row[3] === 'TRUE',
-          createdAt: row[4] || new Date().toISOString(),
-          createdBy: row[5] || '',
-          startDate: row[6] || '',
-          endDate: row[7] || ''
-        }));
+        return rows.map((row, index) => {
+          // Robust ordering logic: Parse existing column I, fallback to createdAt, fallback to generic index
+          let orderVal = Date.now() + index; 
+          if (row[8] !== undefined && row[8] !== '') {
+            orderVal = parseFloat(row[8]);
+          } else if (row[4]) {
+            const parsed = Date.parse(row[4]);
+            if (!isNaN(parsed)) orderVal = parsed;
+          }
+          
+          return {
+            id: row[0] || '',
+            projectId: row[1] || '',
+            title: row[2] || '',
+            completed: row[3] === 'TRUE',
+            createdAt: row[4] || new Date().toISOString(),
+            createdBy: row[5] || '',
+            startDate: row[6] || '',
+            endDate: row[7] || '',
+            order: orderVal
+          };
+        });
       }
 
       async addProject(project, userName) {
@@ -256,7 +276,8 @@
           task.createdAt,
           userName,
           task.startDate || '',
-          task.endDate || ''
+          task.endDate || '',
+          task.order ? String(task.order) : String(Date.now()) 
         ]];
 
         await gapi.client.sheets.spreadsheets.values.append({
@@ -306,7 +327,8 @@
           task.createdAt,
           task.createdBy,
           task.startDate || '',
-          task.endDate || ''
+          task.endDate || '',
+          task.order !== undefined ? String(task.order) : String(Date.parse(task.createdAt))
         ]];
 
         await gapi.client.sheets.spreadsheets.values.update({
@@ -328,7 +350,7 @@
             requests: [{
               deleteDimension: {
                 range: {
-                  sheetId: 1, // Tasks sheet ID
+                  sheetId: 1, 
                   dimension: 'ROWS',
                   startIndex: rowIndex + 1,
                   endIndex: rowIndex + 2
@@ -350,7 +372,7 @@
             requests: [{
               deleteDimension: {
                 range: {
-                  sheetId: 0, // Projects sheet ID
+                  sheetId: 0, 
                   dimension: 'ROWS',
                   startIndex: rowIndex + 1,
                   endIndex: rowIndex + 2
@@ -360,7 +382,6 @@
           }
         });
 
-        // Also delete associated tasks
         const tasks = await this.getTasks();
         const taskRowsToDelete = tasks
           .map((t, i) => ({ task: t, index: i }))
@@ -374,7 +395,7 @@
               requests: [{
                 deleteDimension: {
                   range: {
-                    sheetId: 1, // Tasks sheet ID
+                    sheetId: 1, 
                     dimension: 'ROWS',
                     startIndex: index + 1,
                     endIndex: index + 2
@@ -409,7 +430,6 @@
     // GANTT VIEW COMPONENT
     // ============================================
     function GanttView({ tasks }) {
-      // Filter out tasks that don't have both start and end dates
       const validTasks = tasks
         .filter(t => t.startDate && t.endDate)
         .map(t => ({
@@ -431,19 +451,14 @@
         );
       }
 
-      // Calculate the global min and max dates to set the timeline scale
       const minDate = new Date(Math.min(...validTasks.map(t => t.start)));
       const maxDate = new Date(Math.max(...validTasks.map(t => t.end)));
-      
-      // Add a little padding to the timeline (2 days on each side)
       minDate.setDate(minDate.getDate() - 2);
       maxDate.setDate(maxDate.getDate() + 2);
-      
       const totalTime = maxDate.getTime() - minDate.getTime();
 
       return (
         <div className="mt-2 border-2 border-gray-200 rounded-xl overflow-hidden bg-white animate-in">
-          {/* Header row with dates */}
           <div className="flex border-b-2 border-gray-200 bg-gray-50">
             <div className="w-48 lg:w-64 flex-shrink-0 p-4 font-bold text-sm border-r-2 border-gray-200" style={{ color: 'var(--charcoal)' }}>
               Task Name
@@ -454,12 +469,9 @@
             </div>
           </div>
 
-          {/* Task rows */}
           <div className="divide-y divide-gray-100">
             {validTasks.map(task => {
-              // Calculate positioning percentages
               const leftOffset = ((task.start.getTime() - minDate.getTime()) / totalTime) * 100;
-              // Ensure minimum width visually represents at least 1 day
               const duration = Math.max(1000 * 3600 * 24, task.end.getTime() - task.start.getTime());
               const width = (duration / totalTime) * 100;
 
@@ -475,9 +487,9 @@
                       className="gantt-bar absolute top-3 bottom-3 rounded shadow flex items-center px-3 text-xs font-bold text-white overflow-hidden whitespace-nowrap cursor-help"
                       style={{ 
                         left: `calc(${leftOffset}% + 1rem)`, 
-                        width: `calc(${width}% - 2rem)`, // Adjusting for px-4 padding
-                        backgroundColor: task.completed ? 'var(--sage)' : 'var(--terra)',
-                        opacity: task.completed ? 0.7 : 1
+                        width: `calc(${width}% - 2rem)`,
+                        backgroundColor: task.completed ? 'var(--success-green)' : 'var(--terra)',
+                        opacity: task.completed ? 0.9 : 1
                       }}
                       title={`${task.title}\nStart: ${task.startDate}\nEnd: ${task.endDate}`}
                     >
@@ -612,7 +624,8 @@
             projectId,
             ...taskData,
             completed: false,
-            createdAt: new Date().toISOString()
+            createdAt: new Date().toISOString(),
+            order: Date.now() 
           };
           await sheetsClient.addTask(newTask, userName);
           await refreshData();
@@ -638,6 +651,23 @@
           await refreshData();
         } catch (err) {
           setError('Failed to edit task. Please try again.');
+        }
+      };
+
+      const reorderTask = async (taskId, newOrder) => {
+        // Use functional state update to prevent stale closures
+        setTasks(prevTasks => prevTasks.map(t => 
+          t.id === taskId ? { ...t, order: newOrder } : t
+        ));
+        
+        try {
+          await sheetsClient.updateTask(taskId, { order: newOrder });
+          // Note: Intentionally avoiding an immediate refreshData() here. 
+          // Google Sheets has a read-after-write delay. Refreshing immediately fetches 
+          // the old un-synced order and makes the UI snap back. The 30s poll will catch it later!
+        } catch (err) {
+          setError('Failed to save task order.');
+          refreshData(); // Only refresh to undo the optimistic update if it failed
         }
       };
 
@@ -729,6 +759,7 @@
                 onToggleTask={toggleTask}
                 onEditTask={editTask}
                 onDeleteTask={deleteTask}
+                onReorderTask={reorderTask}
               />
             )}
           </main>
@@ -948,10 +979,14 @@
     // ============================================
     // PROJECT VIEW
     // ============================================
-    function ProjectView({ project, onBack, onUpdateProject, onAddTask, onToggleTask, onEditTask, onDeleteTask }) {
+    function ProjectView({ project, onBack, onUpdateProject, onAddTask, onToggleTask, onEditTask, onDeleteTask, onReorderTask }) {
       const [taskModalConfig, setTaskModalConfig] = useState({ isOpen: false, task: null });
-      // NEW STATE for toggling views
-      const [activeTab, setActiveTab] = useState('list'); // 'list' or 'gantt'
+      const [activeTab, setActiveTab] = useState('list');
+      
+      const [draggedTaskId, setDraggedTaskId] = useState(null);
+      const [dragOverTaskId, setDragOverTaskId] = useState(null);
+
+      const sortedTasks = [...(project.tasks || [])].sort((a, b) => a.order - b.order);
 
       const stats = {
         total: project.tasks?.length || 0,
@@ -972,6 +1007,34 @@
       const openAddTask = () => setTaskModalConfig({ isOpen: true, task: null });
       const openEditTask = (task) => setTaskModalConfig({ isOpen: true, task });
 
+      const handleDrop = (e, targetTask, dropIndex) => {
+        e.preventDefault();
+        if (draggedTaskId === targetTask.id) return;
+
+        const draggedIndex = sortedTasks.findIndex(t => t.id === draggedTaskId);
+        let newOrder;
+        
+        if (draggedIndex < dropIndex) {
+          const afterTarget = sortedTasks[dropIndex + 1];
+          if (afterTarget) {
+            newOrder = (targetTask.order + afterTarget.order) / 2;
+          } else {
+            newOrder = targetTask.order + 1000;
+          }
+        } else {
+          const beforeTarget = sortedTasks[dropIndex - 1];
+          if (beforeTarget) {
+            newOrder = (beforeTarget.order + targetTask.order) / 2;
+          } else {
+            newOrder = targetTask.order - 1000;
+          }
+        }
+
+        onReorderTask(draggedTaskId, newOrder);
+        setDragOverTaskId(null);
+        setDraggedTaskId(null);
+      };
+
       return (
         <div className="animate-in">
           <button
@@ -982,7 +1045,6 @@
             ← Back to Dashboard
           </button>
 
-          {/* Project Details Card */}
           <div className="bg-white rounded-xl border-2 border-gray-200 p-8 mb-6">
             <h2 className="text-4xl font-bold mb-4" style={{ color: 'var(--charcoal)' }}>
               {project.name}
@@ -1021,7 +1083,6 @@
             </div>
           </div>
 
-          {/* Tasks Container */}
           <div className="bg-white rounded-xl border-2 border-gray-200 p-8">
             <div className="flex justify-between items-center mb-2">
               <h3 className="text-2xl font-bold" style={{ color: 'var(--charcoal)' }}>
@@ -1035,7 +1096,6 @@
               </button>
             </div>
 
-            {/* View Toggle Tabs */}
             <div className="flex gap-6 mb-6 border-b-2 border-gray-100">
               <button 
                 onClick={() => setActiveTab('list')}
@@ -1053,73 +1113,108 @@
               </button>
             </div>
 
-            {/* Conditional Rendering based on Tab */}
             {activeTab === 'list' ? (
               <div className="space-y-3 animate-in">
-                {(!project.tasks || project.tasks.length === 0) && (
+                {(!sortedTasks || sortedTasks.length === 0) && (
                   <p className="text-center py-12" style={{ color: 'var(--warm-gray)' }}>
                     No tasks yet. Add one to get started!
                   </p>
                 )}
-                {project.tasks?.map((task, index) => (
-                  <div
-                    key={task.id}
-                    className="flex items-center gap-4 p-4 hover:bg-gray-50 rounded-lg transition border-2 border-transparent hover:border-gray-200 group"
-                    style={{ animationDelay: `${index * 0.05}s` }}
-                  >
-                    <button
-                      onClick={() => onToggleTask(task.id)}
-                      className="flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition"
-                      style={{
-                        borderColor: task.completed ? 'var(--sage)' : 'var(--warm-gray)',
-                        backgroundColor: task.completed ? 'var(--sage)' : 'transparent'
+                {sortedTasks.map((task, index) => {
+                  const isDragging = draggedTaskId === task.id;
+                  const isDragOver = dragOverTaskId === task.id;
+                  
+                  return (
+                    <div
+                      key={task.id}
+                      draggable
+                      onDragStart={(e) => {
+                        setDraggedTaskId(task.id);
+                        // REQUIRED for dragging to work in Firefox and Safari
+                        e.dataTransfer.setData('text/plain', task.id);
+                        e.dataTransfer.effectAllowed = 'move';
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = 'move';
+                        if (dragOverTaskId !== task.id) setDragOverTaskId(task.id);
+                      }}
+                      onDragLeave={() => setDragOverTaskId(null)}
+                      onDrop={(e) => handleDrop(e, task, index)}
+                      onDragEnd={() => {
+                        setDragOverTaskId(null);
+                        setDraggedTaskId(null);
+                      }}
+                      className={`flex items-center gap-4 p-4 rounded-lg transition border-2 group ${
+                        isDragging ? 'opacity-40 scale-[0.99] border-dashed border-gray-300' : ''
+                      } ${
+                        isDragOver ? 'border-dashed bg-orange-50' : 'border-transparent hover:bg-gray-50 hover:border-gray-200'
+                      }`}
+                      style={{ 
+                        animationDelay: `${index * 0.05}s`,
+                        borderColor: isDragOver ? 'var(--terra)' : undefined
                       }}
                     >
-                      {task.completed && <span className="text-white text-sm">✓</span>}
-                    </button>
+                      <div className="flex-shrink-0 drag-handle text-gray-300 hover:text-gray-500 px-1" title="Drag to reorder">
+                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 8h16M4 16h16"></path>
+                        </svg>
+                      </div>
 
-                    <div className="flex-1">
-                      <span
-                        className={`text-lg block font-semibold ${task.completed ? 'line-through opacity-50' : ''}`}
-                        style={{ color: 'var(--charcoal)' }}
+                      <button
+                        onClick={() => onToggleTask(task.id)}
+                        className="flex-shrink-0 w-6 h-6 rounded-full border-2 flex items-center justify-center transition"
+                        style={{
+                          borderColor: task.completed ? 'var(--success-green)' : 'var(--warm-gray)',
+                          backgroundColor: task.completed ? 'var(--success-green)' : 'transparent'
+                        }}
                       >
-                        {task.title}
-                      </span>
-                      {(task.startDate || task.endDate) && (
-                        <div className={`flex gap-3 text-sm mt-1 ${task.completed ? 'opacity-50' : ''}`} style={{ color: 'var(--warm-gray)' }}>
-                          {task.startDate && <span><span className="font-bold">Start:</span> {new Date(task.startDate).toLocaleDateString()}</span>}
-                          {task.endDate && <span><span className="font-bold">End:</span> {new Date(task.endDate).toLocaleDateString()}</span>}
-                        </div>
+                        {task.completed && <span className="text-white text-sm">✓</span>}
+                      </button>
+
+                      <div className="flex-1">
+                        <span
+                          className={`text-lg block font-semibold ${task.completed ? 'line-through opacity-50' : ''}`}
+                          style={{ color: 'var(--charcoal)' }}
+                        >
+                          {task.title}
+                        </span>
+                        {(task.startDate || task.endDate) && (
+                          <div className={`flex gap-3 text-sm mt-1 ${task.completed ? 'opacity-50' : ''}`} style={{ color: 'var(--warm-gray)' }}>
+                            {task.startDate && <span><span className="font-bold">Start:</span> {new Date(task.startDate).toLocaleDateString()}</span>}
+                            {task.endDate && <span><span className="font-bold">End:</span> {new Date(task.endDate).toLocaleDateString()}</span>}
+                          </div>
+                        )}
+                      </div>
+                      
+                      {task.createdBy && (
+                        <span className="text-sm mr-2 opacity-50 hidden md:block" style={{ color: 'var(--warm-gray)' }}>
+                          {task.createdBy.split('@')[0]}
+                        </span>
                       )}
-                    </div>
-                    
-                    {task.createdBy && (
-                      <span className="text-sm mr-2 opacity-50 hidden md:block" style={{ color: 'var(--warm-gray)' }}>
-                        {task.createdBy.split('@')[0]}
-                      </span>
-                    )}
 
-                    <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button 
-                        onClick={() => openEditTask(task)} 
-                        className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-600 transition"
-                        title="Edit Task"
-                      >
-                        ✎
-                      </button>
-                      <button 
-                        onClick={() => onDeleteTask(task.id)} 
-                        className="w-8 h-8 rounded-full bg-red-50 hover:bg-red-100 flex items-center justify-center text-red-500 transition"
-                        title="Delete Task"
-                      >
-                        ×
-                      </button>
+                      <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button 
+                          onClick={() => openEditTask(task)} 
+                          className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-gray-600 transition"
+                          title="Edit Task"
+                        >
+                          ✎
+                        </button>
+                        <button 
+                          onClick={() => onDeleteTask(task.id)} 
+                          className="w-8 h-8 rounded-full bg-red-50 hover:bg-red-100 flex items-center justify-center text-red-500 transition"
+                          title="Delete Task"
+                        >
+                          ×
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
-              <GanttView tasks={project.tasks || []} />
+              <GanttView tasks={sortedTasks || []} />
             )}
           </div>
           
